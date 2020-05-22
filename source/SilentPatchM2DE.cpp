@@ -115,9 +115,9 @@ namespace UTF8PathFixes
 		return result;
 	}
 
-	int WINAPI MultiByteToWideChar_UTF8(UINT /*CodePage*/, DWORD dwFlags, LPCCH lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar)
+	int WINAPI MultiByteToWideChar_UTF8(UINT CodePage, DWORD dwFlags, LPCCH lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar)
 	{
-		return MultiByteToWideChar(CP_UTF8, dwFlags, lpMultiByteStr, cbMultiByte, lpWideCharStr, cchWideChar);
+		return MultiByteToWideChar(CodePage != 0 ? CodePage : CP_UTF8, dwFlags, lpMultiByteStr, cbMultiByte, lpWideCharStr, cchWideChar);
 	}
 }
 
@@ -450,7 +450,7 @@ void OnInitializeHook()
 
 	// Route all functions to their UTF-8 flavors
 	{
-		auto utf8CP = pattern( "41 BE E9 FD 00 00" ).count(4);
+		auto utf8CP = pattern( "41 BE E9 FD 00 00 44 39 70 0C 75 15" ).count(4);
 		utf8CP.for_each_result( []( pattern_match match ) {
 			Nop( match.get<void>( 6 + 4 ), 2 );
 		} );
