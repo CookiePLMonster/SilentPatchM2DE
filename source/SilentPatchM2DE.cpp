@@ -3,6 +3,7 @@
 #include "Utils/Trampoline.h"
 
 #include <ShlObj.h>
+#include <shellapi.h>
 #include <string_view>
 
 #if _DEBUG
@@ -119,6 +120,23 @@ namespace UTF8PathFixes
 	}
 }
 
+int WINAPI SHFileOperationW_NullTerminate(LPSHFILEOPSTRUCTW lpFileOp)
+{
+	// Fixes pTo/pFrom strings not having a double null terminator at the end
+	// I -know- that the game puts those variables on the stack, so I can cast constness away and fix them in place
+	auto fixupNullTerminator = []( PCZZWSTR s )
+	{
+		PZZWSTR str = const_cast<PZZWSTR>(s);
+		const size_t len = wcslen(str);
+
+		str[len+1] = L'\0';
+	};
+
+	fixupNullTerminator(lpFileOp->pFrom);
+	fixupNullTerminator(lpFileOp->pTo);
+	return SHFileOperationW(lpFileOp);
+}
+
 #if DEBUG_DOCUMENTS_PATH
 HRESULT WINAPI SHGetKnownFolderPath_Fake(REFKNOWNFOLDERID rfid, DWORD dwFlags, HANDLE hToken, PWSTR *ppszPath)
 {
@@ -155,7 +173,6 @@ static void RedirectImports()
 
 	for ( ; pImports->Name != 0; pImports++ )
 	{
-#if DEBUG_DOCUMENTS_PATH
 		if ( _stricmp(reinterpret_cast<const char*>(instance + pImports->Name), "shell32.dll") == 0 )
 		{
 			assert ( pImports->OriginalFirstThunk != 0 );
@@ -164,15 +181,22 @@ static void RedirectImports()
 
 			for ( ptrdiff_t j = 0; pFunctions[j].u1.AddressOfData != 0; j++ )
 			{
+				if ( strcmp(reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(instance + pFunctions[j].u1.AddressOfData)->Name, "SHFileOperationW") == 0 )
+				{
+					void** pAddress = reinterpret_cast<void**>(instance + pImports->FirstThunk) + j;
+					*pAddress = SHFileOperationW_NullTerminate;
+				}
+
+#if DEBUG_DOCUMENTS_PATH
 				if ( strcmp(reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(instance + pFunctions[j].u1.AddressOfData)->Name, "SHGetKnownFolderPath") == 0 )
 				{
 					void** pAddress = reinterpret_cast<void**>(instance + pImports->FirstThunk) + j;
 					*pAddress = SHGetKnownFolderPath_Fake;
 				}
+#endif
 			}
 			
 		}
-#endif
 
 		if ( _stricmp(reinterpret_cast<const char*>(instance + pImports->Name), "kernel32.dll") == 0 )
 		{
