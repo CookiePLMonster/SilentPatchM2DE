@@ -4,7 +4,13 @@
 
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <Shlwapi.h>
 #include <string_view>
+
+#pragma comment(lib, "Shlwapi.lib")
+
+#pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#pragma comment(lib, "Comctl32.lib")
 
 #if _DEBUG
 
@@ -45,11 +51,6 @@ namespace UTF8PathFixes
 		}
 
 		return result;
-	}
-
-	size_t wcstombs_UTF8(char* dest, const wchar_t* src, size_t max)
-	{
-		return static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, src, -1, dest, static_cast<int>(max), nullptr, nullptr)) - 1;
 	}
 
 	BOOL WINAPI CreateDirectoryUTF8(LPCSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes)
@@ -117,6 +118,174 @@ namespace UTF8PathFixes
 	int WINAPI MultiByteToWideChar_UTF8(UINT /*CodePage*/, DWORD dwFlags, LPCCH lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar)
 	{
 		return MultiByteToWideChar(CP_UTF8, dwFlags, lpMultiByteStr, cbMultiByte, lpWideCharStr, cchWideChar);
+	}
+}
+
+namespace EmergencySaveMigration
+{
+	std::string& TrimZeros( std::string& str )
+	{
+		auto pos = str.find_last_not_of( '\0' );
+		if ( pos == std::string::npos )
+		{
+			str.clear();
+		}
+		else
+		{
+			str.erase( pos + 1 );
+		}
+		return str;
+	}
+
+	std::wstring& TrimZeros( std::wstring& str )
+	{
+		auto pos = str.find_last_not_of( L'\0' );
+		if ( pos == std::string::npos )
+		{
+			str.clear();
+		}
+		else
+		{
+			str.erase( pos + 1 );
+		}
+		return str;
+	}
+
+
+	static size_t (*orgWcstombs)(char* dest, const wchar_t* src, size_t max);
+	static void TryToRescueSaves(const char* wrongPath, const wchar_t* correctPath)
+	{
+		// Prepare save paths for both
+		std::string wrongSavePath(MAX_PATH, '\0');		
+		PathCombineA(wrongSavePath.data(), wrongPath, "My Games");
+		PathAppendA(wrongSavePath.data(), "Mafia II Definitive Edition");
+		TrimZeros(wrongSavePath);
+
+		std::wstring correctSavePath(MAX_PATH, '\0');
+		PathCombineW(correctSavePath.data(), correctPath, L"My Games");
+		PathAppendW(correctSavePath.data(), L"Mafia II Definitive Edition");
+		TrimZeros(correctSavePath);
+
+		// Try to figure out if both directories are identical (either same path or pointing to the same directory via a hard link)
+		bool sourceExists = false;
+		bool destinationExists = false;
+		if ( HANDLE sourceDirectory = CreateFileA( wrongSavePath.c_str(), 0, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr ); sourceDirectory != INVALID_HANDLE_VALUE )
+		{
+			// Source exists so we have something to move
+			sourceExists = true;
+			if ( HANDLE destinationDirectory = CreateFileW( correctSavePath.c_str(), 0, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr ); destinationDirectory != INVALID_HANDLE_VALUE )
+			{	
+				destinationExists = true;
+				CloseHandle( destinationDirectory );
+			}
+
+			CloseHandle( sourceDirectory );
+		}
+
+
+		if ( sourceExists && !destinationExists )
+		{
+			auto fnDialogFunc = [] ( HWND hwnd, UINT msg, WPARAM, LPARAM, LONG_PTR ) -> HRESULT
+			{
+				if ( msg == TDN_CREATED )
+				{
+					HMODULE gameModule = GetModuleHandle( nullptr );
+					if ( HICON icon = LoadIcon( gameModule, MAKEINTRESOURCE(101) ); icon != nullptr )
+					{
+						SendMessage( hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon) );
+					}
+				}
+
+				return S_OK;
+			};
+
+			// "Lazily" expanded, as if we reach this place we know it's "broken"
+			std::wstring wideWrongSavePath(wrongSavePath.begin(), wrongSavePath.end());
+
+			std::wstring contentString;
+			contentString.append( L"SilentPatch found your save games in the following location:\n\n" );
+			contentString.append( wideWrongSavePath.c_str() );
+			contentString.append( L"\n\nThis does not appear to be your real Documents directory. "
+									L"Do you wish to relocate them to the following directory instead?\n\n" );
+			contentString.append( correctSavePath.c_str() );
+			contentString.append( L"\n\nThis way saves will be located in your real Documents directory and "
+									L"will be visible in the game both with SilentPatch and/or when the official "
+									L"patch fixes this bug." );
+
+			TASKDIALOGCONFIG dialogConfig { sizeof(dialogConfig) };
+			dialogConfig.dwFlags = TDF_CAN_BE_MINIMIZED;
+			dialogConfig.dwCommonButtons = TDCBF_YES_BUTTON|TDCBF_NO_BUTTON;
+			dialogConfig.pszWindowTitle = L"SilentPatch";
+			dialogConfig.pszContent = contentString.c_str();
+			dialogConfig.nDefaultButton = IDYES;
+			dialogConfig.pszMainIcon = TD_INFORMATION_ICON;
+			dialogConfig.pfCallback = fnDialogFunc;
+
+			int buttonResult;
+			if ( SUCCEEDED(TaskDialogIndirect( &dialogConfig, &buttonResult, nullptr, nullptr )) )
+			{
+				if ( buttonResult == IDYES )
+				{
+					// Copying just to be sure it's double null terminated at the end
+					auto stringToDoubleNullTerminated = []( std::wstring str )
+					{
+						str.append( 2, L'\0' );
+						return str;
+					};
+
+					const std::wstring source = stringToDoubleNullTerminated( wideWrongSavePath );
+					const std::wstring destination = stringToDoubleNullTerminated( correctSavePath );
+
+					SHFILEOPSTRUCTW moveOp = {};
+					moveOp.wFunc = FO_MOVE;
+					moveOp.fFlags = FOF_NOCONFIRMMKDIR;
+					moveOp.pFrom = source.c_str();
+					moveOp.pTo = destination.c_str();
+					const int moveResult = SHFileOperationW( &moveOp );
+					if ( moveResult == 0 )
+					{
+						if ( moveOp.fAnyOperationsAborted == FALSE )
+						{
+							// Try to delete the original Documents directory (and its parent directories) - it's likely empty now
+							do
+							{
+								PathRemoveFileSpecW( wideWrongSavePath.data() );
+							}
+							while ( RemoveDirectoryW( wideWrongSavePath.c_str() ) != FALSE );
+						}
+						else
+						{
+							MessageBoxW( nullptr, L"Move operation has been aborted by the user.\n\n"
+													L"Please verify that all your saves are still present in the source folder - if not, move them back from the destination folder.",
+													L"SilentPatch", MB_OK|MB_ICONERROR|MB_SETFOREGROUND );
+						}
+					}
+					else
+					{
+						MessageBoxW( nullptr, L"Move operation failed.\n\n"
+							L"Please verify that all your saves are still present in the source folder - if not, move them back from the destination folder.",
+										
+							L"SilentPatch", MB_OK|MB_ICONERROR|MB_SETFOREGROUND );
+					}
+				}
+			}
+		}
+	}
+
+	size_t wcstombs_RescueSavesAndConvertProperly(char* dest, const wchar_t* src, size_t max)
+	{
+		// First convert the path properly
+		size_t result = static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, src, -1, dest, static_cast<int>(max), nullptr, nullptr)) - 1;
+
+		// Now try to figure out if saves need to be "rescued"
+		// Check if the "wrong" path to Documents\My Games\Mafia II Definitive Edition exists (use ANSI functions to replicate stock behaviour properly)
+		// If it does, see if it's different to the "correct" path - if it's either different or the "correct" path doesn't exist, offer the player to move files
+		// Delete the "wrong" directories without doing it recursively, so it only tries to wipe empty directories
+		char wrongDocumentsPath[MAX_PATH] {};
+		orgWcstombs(wrongDocumentsPath, src, MAX_PATH);
+		TryToRescueSaves(wrongDocumentsPath, src);
+
+		return result;
 	}
 }
 
@@ -257,9 +426,14 @@ void OnInitializeHook()
 		auto wcstombs_pattern = pattern( "41 B8 ? ? ? ? E8 ? ? ? ? 48 8B C7 40 38 7C 05 50" );
 		if ( wcstombs_pattern.count(1).size() == 1 )
 		{
+			// Convert the path properly AND include an emergency dialog box to move files from the wrong save directory
+			// for those intelligent people who worked around the save bug by running as admin...
+			using namespace EmergencySaveMigration;
+
 			auto match = wcstombs_pattern.get_first( 6 );
 			Trampoline* trampoline = Trampoline::MakeTrampoline( match );
-			InjectHook( match, trampoline->Jump(wcstombs_UTF8) );
+			ReadCall( match, orgWcstombs );
+			InjectHook( match, trampoline->Jump(wcstombs_RescueSavesAndConvertProperly) );
 		}
 
 		auto multiByteToWideChar_pattern = pattern( "41 C6 06 2A" );
