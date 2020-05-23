@@ -411,9 +411,70 @@ static void RedirectImports()
 	}
 }
 
+bool IsGameVersionCompatible()
+{
+	using namespace Memory::VP::DynBase;
+
+	// Check for the game version, warn the user if we spot an unknown version (future patch?)
+	// Look for the pattern from the top of WinMain
+	if ( !MemEquals(0x1400AB405, { 0x48, 0x89, 0x7C, 0x24, 0x10, 0x55, 0x48, 0x8D, 0xAC, 0x24, 0x10, 0xFC, 0xFF, 0xFF}) )
+	{
+		auto fnDialogFunc = [] ( HWND hwnd, UINT msg, WPARAM, LPARAM lParam, LONG_PTR ) -> HRESULT
+		{
+			if ( msg == TDN_CREATED )
+			{
+				HMODULE gameModule = GetModuleHandle( nullptr );
+				if ( HICON icon = LoadIcon( gameModule, MAKEINTRESOURCE(101) ); icon != nullptr )
+				{
+					SendMessage( hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon) );
+				}
+			}
+			else if ( msg == TDN_HYPERLINK_CLICKED )
+			{
+				if ( reinterpret_cast<LPCWSTR>(lParam) == std::wstring_view(L"github") )
+				{
+					ShellExecute( nullptr, TEXT("open"), TEXT(rsc_UpdateURL), nullptr, nullptr, SW_SHOW );
+				}
+			}
+
+			return S_OK;
+		};
+
+		TASKDIALOGCONFIG dialogConfig { sizeof(dialogConfig) };
+		dialogConfig.dwFlags = TDF_CAN_BE_MINIMIZED|TDF_ENABLE_HYPERLINKS;
+		dialogConfig.dwCommonButtons = TDCBF_YES_BUTTON|TDCBF_NO_BUTTON;
+		dialogConfig.pszWindowTitle = L"SilentPatch";
+		dialogConfig.pszContent = L"Unknown game version detected!\n\n"
+			L"SilentPatch could not determine the game version. Since this patch is made with the first game version in mind, "
+			L"this may mean that the game has received an official update. If this is the case, please check the mod's GitHub release page "
+			L"for possible updates regarding SilentPatch:\n\n"
+			L"<A HREF=\"github\">" rsc_UpdateURL L"</A>\n\n"
+			L"Clicking on the link will open the GitHub page.\nIf you wish to proceed to the game with SilentPatch loaded, press Yes. "
+			L"However, be aware that if the same issues have been fixed officially, "
+			L"there may be unknown consequences.\nPress No to proceed without SilentPatch loaded (recommended).",
+		dialogConfig.nDefaultButton = IDNO;
+		dialogConfig.pszMainIcon = TD_WARNING_ICON;
+		dialogConfig.pfCallback = fnDialogFunc;
+
+		int buttonResult;
+		if ( SUCCEEDED(TaskDialogIndirect( &dialogConfig, &buttonResult, nullptr, nullptr )) )
+		{
+			return buttonResult == IDYES;
+		}
+		else
+		{
+			// Error! Do not inject SP just to be safe
+			return false;
+		}
+	}
+
+	return true;
+}
 
 void OnInitializeHook()
 {
+	if ( !IsGameVersionCompatible() ) return;
+
 	using namespace Memory::VP;
 	using namespace hook;
 
