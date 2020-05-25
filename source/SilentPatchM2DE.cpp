@@ -516,4 +516,21 @@ void OnInitializeHook()
 			Nop( match.get<void>( 6 + 4 ), 2 );
 		} );
 	}
+
+
+	// Allow Mafia II Classic and Definitive Edition to run at once
+	{
+		auto launcherMutex = pattern( "48 8D 4C 24 30 4C 8D 05" );
+		if ( launcherMutex.count(1).size() == 1 )
+		{
+			auto match = launcherMutex.get_first( 5 + 3 );
+			Trampoline* trampoline = Trampoline::MakeTrampoline( match );
+
+			const char mutexName[] = "Mafia2 DE Launcher Super Mutex";
+			auto* space = trampoline->Pointer< std::remove_const_t<decltype(mutexName)> >();
+			memcpy( space, mutexName, sizeof(mutexName) );
+
+			WriteOffsetValue( match, space );
+		}
+	}
 }
