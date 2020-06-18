@@ -22,6 +22,11 @@
 
 #endif
 
+// Target game version
+// 0 - day 1 (20.05)
+// 1 - 1st patch (18.06)
+#define TARGET_VERSION			1
+
 
 namespace UTF8PathFixes
 {
@@ -289,6 +294,7 @@ namespace EmergencySaveMigration
 	}
 }
 
+#if TARGET_VERSION < 1 // [PC] Addressed a reported concern that legacy saves were sometimes not working on Steam
 int WINAPI SHFileOperationW_NullTerminate(LPSHFILEOPSTRUCTW lpFileOp)
 {
 	// Fixes pTo/pFrom strings not having a double null terminator at the end
@@ -305,6 +311,7 @@ int WINAPI SHFileOperationW_NullTerminate(LPSHFILEOPSTRUCTW lpFileOp)
 	fixupNullTerminator(lpFileOp->pTo);
 	return SHFileOperationW(lpFileOp);
 }
+#endif
 
 #if DEBUG_DOCUMENTS_PATH
 HRESULT WINAPI SHGetKnownFolderPath_Fake(REFKNOWNFOLDERID rfid, DWORD dwFlags, HANDLE hToken, PWSTR *ppszPath)
@@ -342,6 +349,7 @@ static void RedirectImports()
 
 	for ( ; pImports->Name != 0; pImports++ )
 	{
+#if TARGET_VERSION < 1 || DEBUG_DOCUMENTS_PATH
 		if ( _stricmp(reinterpret_cast<const char*>(instance + pImports->Name), "shell32.dll") == 0 )
 		{
 			assert ( pImports->OriginalFirstThunk != 0 );
@@ -350,11 +358,13 @@ static void RedirectImports()
 
 			for ( ptrdiff_t j = 0; pFunctions[j].u1.AddressOfData != 0; j++ )
 			{
+#if TARGET_VERSION < 1
 				if ( strcmp(reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(instance + pFunctions[j].u1.AddressOfData)->Name, "SHFileOperationW") == 0 )
 				{
 					void** pAddress = reinterpret_cast<void**>(instance + pImports->FirstThunk) + j;
 					*pAddress = SHFileOperationW_NullTerminate;
 				}
+#endif
 
 #if DEBUG_DOCUMENTS_PATH
 				if ( strcmp(reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(instance + pFunctions[j].u1.AddressOfData)->Name, "SHGetKnownFolderPath") == 0 )
@@ -366,6 +376,7 @@ static void RedirectImports()
 			}
 			
 		}
+#endif
 
 		if ( _stricmp(reinterpret_cast<const char*>(instance + pImports->Name), "kernel32.dll") == 0 )
 		{
@@ -417,7 +428,13 @@ bool IsGameVersionCompatible()
 
 	// Check for the game version, warn the user if we spot an unknown version (future patch?)
 	// Look for the pattern from the top of WinMain
+#if TARGET_VERSION == 0
 	if ( !MemEquals(0x1400AB405, { 0x48, 0x89, 0x7C, 0x24, 0x10, 0x55, 0x48, 0x8D, 0xAC, 0x24, 0x10, 0xFC, 0xFF, 0xFF}) )
+#elif TARGET_VERSION == 1
+	if ( !MemEquals(0x1400AB4F5, { 0x48, 0x89, 0x7C, 0x24, 0x10, 0x55, 0x48, 0x8D, 0xAC, 0x24, 0x10, 0xFC, 0xFF, 0xFF}) )
+#else
+#error Unknown game version!
+#endif
 	{
 		auto fnDialogFunc = [] ( HWND hwnd, UINT msg, WPARAM, LPARAM lParam, LONG_PTR ) -> HRESULT
 		{
@@ -445,8 +462,13 @@ bool IsGameVersionCompatible()
 		dialogConfig.dwCommonButtons = TDCBF_YES_BUTTON|TDCBF_NO_BUTTON;
 		dialogConfig.pszWindowTitle = L"SilentPatch";
 		dialogConfig.pszContent = L"Unknown game version detected!\n\n"
-			L"SilentPatch could not determine the game version. Since this patch is made with the first game version in mind, "
-			L"this may mean that the game has received an official update. If this is the case, please check the mod's GitHub release page "
+			L"SilentPatch could not determine the game version. Since this patch is made with "
+#if TARGET_VERSION == 0
+			L"the first game version"
+#elif TARGET_VERSION == 1
+			L"the first (18 June) patch"
+#endif
+			L" in mind, this may mean that the game has received an official update. If this is the case, please check the mod's GitHub release page "
 			L"for possible updates regarding SilentPatch:\n\n"
 			L"<A HREF=\"github\">" rsc_UpdateURL L"</A>\n\n"
 			L"Clicking on the link will open the GitHub page.\nIf you wish to proceed to the game with SilentPatch loaded, press Yes. "
